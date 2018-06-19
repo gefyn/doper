@@ -1,0 +1,43 @@
+#!/bin/bash
+
+CMDS="(pull|up|down|ps|images|logs|restart|stop|start)"
+PNAMES="(prod|staging)"
+PORTS=("prod:301" "staging:302")
+SRVS=("api" "lk" "edu")
+BASE="/opt/docker"
+REGISTRY="docker.misis.ru:4443"
+export NAME=login
+
+###############################################################################
+bin=$(basename "$0")
+usage() {
+  echo "Usage:"
+  echo "  $bin $PNAMES $CMDS OPTS"
+  echo
+  echo "Examples:"
+  echo "  $bin staging pull"
+  echo "  $bin prod up -d"
+  echo "  $bin prod restart edu"
+  exit "$1"
+}
+
+[ "$1" = 'help' -o "$1" = 'usage' ] && usage 0
+
+pname="$1"
+echo "$pname"|grep -Eq "^$PNAMES$" || usage 1
+shift
+cmd="$1"
+echo "$cmd"|grep -Eq "^$CMDS$" || usage 1
+shift
+
+if [ "$cmd" = 'pull' ]; then
+  for a in "${SRVS[@]}"; do docker pull "$REGISTRY/$NAME/$a" --all-tags; done
+else
+  for p in "${PORTS[@]}"; do [ "${p%%:*}" = "$pname" ] && export PORT="${p##*:}"; done
+  if [ -z "$PORT" ]; then
+    echo "User not found"
+    exit 1
+  fi
+
+  COMPOSE_PROJECT_NAME="$pname" docker-compose -f "$BASE/$NAME/docker-compose.yml" -f "$BASE/$NAME/docker-compose.$pname.yml" "$cmd" $@
+fi
