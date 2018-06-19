@@ -1,36 +1,107 @@
 #!/bin/bash
 
-PNAMES="(test|ndoroshenko|d2d4)"
+CMDS="(build|up|down|ps|images|logs|restart|stop|start)"
+CMDS2="(staging|prod)"
+CMDS3="(pull|up|down|ps|images|logs|restart|stop|start)"
+DNAMES="dev|test"
+DNAMES2="push"
+DNAMES3="staging|prod"
 PORTS=("test:303" "d2d4:304" "ndoroshenko:305")
-CMDS="(up|down|restart|ps|logs|images|build|stop|start)"
-DIR=/opt/docker/login
+SRVS=("api" "lk" "edu")
+BASE="/opt/docker"
+REGISTRY="docker.misis.ru:4443"
+export NAME=login
 
 ###############################################################################
 bin=$(basename "$0")
 usage() {
   echo "Usage:"
-  echo "  $bin $PNAMES $CMDS OPTS"
+  echo "  $bin ($DNAMES) $CMDS [OPTS]"
+  echo "  $bin ($DNAMES2) $CMDS2"
+  echo "  $bin ($DNAMES3) $CMDS3"
   echo
   echo "Examples:"
-  echo "  $bin test up -d --build"
+  echo "  $bin dev build"
+  echo "  $bin dev up -d"
   echo "  $bin test restart edu"
-  echo "  $bin ndoroshenko down"
+  echo "  $bin push staging"
+  echo "  $bin staging up"
+  echo "  $bin prod images"
   exit "$1"
 }
 
 [ "$1" = 'help' -o "$1" = 'usage' ] && usage 0
 
-pname="$1"
-echo "$pname"|grep -Eq "^$PNAMES$" || usage 1
-shift
-cmd="$1"
-echo "$cmd"|grep -Eq "^$CMDS$" || usage 1
+dname="$1"
+echo "$dname"|grep -Eq "^($DNAMES|$DNAMES2|$DNAMES3)$" || usage 1
 shift
 
-for p in "${PORTS[@]}"; do [ "${p%%:*}" = "$pname" ] && export PORT="${p##*:}"; done
-[ $pname = 'test' ] && dname='test' || dname='dev'
+case "$dname" in
 
-#docker-compose -f "/opt/docker/$pname/docker-compose.yml" "$cmd" $@
-#docker-compose -f "/opt/docker/login/docker-compose-$pname.yml" -p "$pname" "$cmd" $@
-#COMPOSE_PROJECT_NAME="$pname" docker-compose -f "/opt/docker/$dname/docker-compose.yml" "$cmd" $@
-COMPOSE_PROJECT_NAME="$pname" docker-compose -f "$DIR/docker-compose.yml" -f "$DIR/docker-compose.$dname.yml" "$cmd" $@
+  test|dev)
+
+    cmd="$1"
+    echo "$cmd"|grep -Eq "^$CMDS$" || usage 1
+    shift
+
+    echo "$@"|grep -Eq "build" && usage 2
+
+    [ "$dname" = 'test' ] && pname='test' || pname="$USER"
+
+    if [ "$cmd" = 'build' ]; then
+      for a in "${SRVS[@]}"; do
+        cd "$HOME/$a" || usage 1
+
+        if output=$(git status --porcelain) && [ -n "$output" ]; then
+          echo "$a: commit your changes first"
+        else
+          img="$NAME/$a-$pname"
+          rev=$(git rev-parse --short HEAD)
+         # tag=$(git describe --tags $(git rev-list --tags --max-count=1))
+          tag=$(git describe --tags 2>/dev/null)
+          printf "%-20s %-10s %-10s\n" $img $rev $tag
+
+          if docker build . -t "$img:$rev"; then
+            [ -n "$tag" ] && docker tag "$img:$rev" "$img:$tag"
+            if [ "$dname" = 'test' ]; then
+              docker tag "$img:$rev" "$img:latest"
+              docker tag "$img:$rev" "$REGISTRY/$NAME/$a:$rev"
+              docker push "$REGISTRY/$NAME/$a:$rev"
+            fi
+          fi
+        fi
+      done
+    else
+      for p in "${PORTS[@]}"; do [ "${p%%:*}" = "$pname" ] && export PORT="${p##*:}"; done
+      if [ -z "$PORT" ]; then
+        echo "User not found"
+        exit 1
+      fi
+
+      COMPOSE_PROJECT_NAME="$pname" docker-compose -f "$BASE/$NAME/docker-compose.yml" -f "$BASE/$NAME/docker-compose.$dname.yml" "$cmd" $@
+    fi
+
+  ;;
+  push)
+
+    cmd="$1"
+    echo "$cmd"|grep -Eq "^$CMDS2$" || usage 1
+    shift
+
+    for a in "${SRVS[@]}"; do
+      img="$NAME/$a"
+      docker tag "$img-test" "$REGISTRY/$img:$cmd"
+      docker push "$REGISTRY/$img:$cmd"
+    done
+
+  ;;
+  staging|prod)
+
+    cmd="$1"
+    echo "$cmd"|grep -Eq "^$CMDS3$" || usage 1
+    shift
+
+    sudo -u servcraft ssh rendr "sudo docker-login $dname $cmd"
+
+  ;;
+esac
