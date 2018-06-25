@@ -1,0 +1,192 @@
+#!/bin/bash
+
+DNAMES1="dev|test"
+DNAMES2="staging|prod"
+CMDS="up|down|ps|images|logs|restart|stop|start"
+NOREP="(ps|images|logs)"
+BASE="/opt/docker"
+SUDO="/usr/bin/sudo"
+SSH="/usr/bin/ssh"
+BIN=$(basename "$0")
+
+###############################################################################
+usage() {
+  read -r -d '' usage << EOM
+Usage:
+  $BIN $NAME ($DNAMES1) (build|$CMDS) [OPTS]
+  $BIN $NAME ($DNAMES2) (pull|$CMDS) [OPTS]
+  $BIN $NAME push ($DNAMES2)
+  $BIN $NAME remote ($DNAMES2) (pull|$CMDS)
+
+Shortest path:
+  $BIN $NAME test build
+  $BIN $NAME push prod
+  sudo $BIN $NAME remote prod pull
+  sudo $BIN $NAME remote prod up
+
+Safe path:
+  sudo -g docker $BIN $NAME dev build
+  sudo -g docker $BIN $NAME dev up -d
+  $BIN $NAME test build
+  $BIN $NAME test up -d
+  $BIN $NAME push staging
+  sudo $BIN $NAME remote staging pull
+  sudo $BIN $NAME remote staging up
+  sudo $BIN $NAME remote staging down
+  $BIN $NAME push prod
+  sudo $BIN $NAME remote prod pull
+  sudo $BIN $NAME remote prod up
+EOM
+  echo "$usage"
+  exit "$1"
+}
+
+send() {
+  echo -e "<pre>\n$2\n</pre>" | mail -s "$BIN $NAME $1 by $AUTH" "$MAIL"
+}
+
+###############################################################################
+AUTH="$USER"
+if [ "$1" = '-a' ]; then shift; if [ -n "$1" ]; then AUTH="$1 via $USER"; shift; fi; fi
+
+export NAME="$1"
+if [ -z "$NAME" -o "$1" = 'help' -o "$1" = 'usage' ]; then
+  NAME='<project>'
+  usage 1
+elif [ -x "$BASE/$NAME/conf.sh" ]; then
+  . "$BASE/$NAME/conf.sh"
+else
+  echo "Project not found"
+  exit 1
+fi
+shift
+
+dname="$1"
+echo "$dname"|grep -Eq "^($DNAMES1|$DNAMES2|push|remote)$" || usage 1
+shift
+
+case "$dname" in
+
+  dev|test|staging|prod)
+
+    cmd="$1"
+    echo "$cmd"|grep -Eq "^($CMDS|build|pull)$" || usage 1
+    shift
+
+    echo "$@"|grep -Eq "build" && usage 2
+
+    if [ ! -f "$BASE/$NAME/docker-compose.$dname.yml" ]; then
+      echo "$dname not allowed here"
+      exit 1
+    fi
+
+    [ "$dname" = 'dev' ] && cname='$USER' || cname="$dname"
+
+    if [ "$cmd" = 'build' ]
+    then
+      echo "$dname"|grep -Eq "^($DNAMES2)$" && usage 1
+
+      for a in "${SRVS[@]}"
+      do
+        img="$NAME/$a-$cname"
+        cd "$HOME/$a" 2>/dev/null;
+        if [ $? -ne 0 ]
+        then
+          printf -v line '%-20s %s\n' "$img" "no source"
+          out+="$line"
+          echo -n "$line"
+        else
+          if [ "$dname" != 'dev' ] && output=$(git status --porcelain) && [ -n "$output" ]
+          then
+            printf -v line '%-20s %s' "$img" "commit your changes first"
+            out+="$line"
+            echo -n "$line"
+          else
+            rev=$(git rev-parse --short HEAD)
+            tag=$(git describe --tags 2>/dev/null)
+            [ "$dname" = 'dev' ] && args="--build-arg UID=$UID"
+
+            printf -v line '%-20s %-10s %-10s %s\n' "$img" "$rev" "$tag" "$args"
+            out+="$line"
+            echo -n "$line"
+
+            if docker build . -t "$img:$rev" $args
+            then
+              [ -n "$tag" ] && docker tag "$img:$rev" "$img:$tag"
+              docker tag "$img:$rev" "$img:latest"
+              if [ "$dname" = 'test' ]
+              then
+                docker tag "$img:$rev" "$REGISTRY/$NAME/$a:$rev"
+                docker push "$REGISTRY/$NAME/$a:$rev"
+                out+="push $REGISTRY/$NAME/$a:$rev\n"
+              fi
+            fi
+          fi
+        fi
+      done
+      send "$dname $cmd $@" "$out"
+
+    elif [ "$cmd" = 'pull' ]
+    then
+      echo "$dname"|grep -Eq "^($DNAMES1)$" && usage 1
+
+      for a in "${SRVS[@]}"
+      do
+        docker pull "$REGISTRY/$NAME/$a" --all-tags
+        out+="pull $REGISTRY/$NAME/$a\n"
+#        out+="$(docker images "$REGISTRY/$NAME/$a" --format "{{.Repository}}:{{.Tag}}\t{{.ID}} {{.CreatedSince}}")\n\n"
+        out+="$(docker images "$REGISTRY/$NAME/$a" --format "{{.ID}} $a:{{.Tag}}")\n\n"
+      done
+      send "$dname $cmd $@" "$out"
+
+    else
+      for p in "${PORTS[@]}"; do [ "${p%%:*}" = "$cname" ] && export PORT="${p##*:}"; done
+      if [ -z "$PORT" ]; then
+        echo "User not found"
+        exit 1
+      fi
+
+      COMPOSE_PROJECT_NAME="$cname" docker-compose -f "$BASE/$NAME/docker-compose.yml" -f "$BASE/$NAME/docker-compose.$dname.yml" "$cmd" $@
+      echo "$cmd"|grep -Eq "^$NOREP$" || send "$dname $cmd $@"
+    fi
+
+  ;;
+  push)
+
+    cmd="$1"
+    echo "$cmd"|grep -Eq "^($DNAMES2)$" || usage 1
+    shift
+
+    for a in "${SRVS[@]}"
+    do
+      img="$NAME/$a"
+      docker tag "$img-test" "$REGISTRY/$img:$cmd"
+      if [ $? -ne 0 ]
+      then
+        printf -v line '%-20s %s\n' "$img-test" "no image"
+        out+="$line"
+        echo -n "$line"
+      else
+#        out+="$(docker images "$REGISTRY/$img" --format "{{.Repository}}:{{.Tag}}\t{{.ID}} {{.CreatedSince}}")\n"
+        out+="$(docker images "$REGISTRY/$img" --format "{{.ID}} $a:{{.Tag}}")\n"
+        out+="push $REGISTRY/$img:$cmd\n\n"
+        docker push "$REGISTRY/$img:$cmd"
+      fi
+    done
+    send "$dname $cmd $@" "$out"
+
+  ;;
+  remote)
+
+    rname="$1"
+    echo "$rname"|grep -Eq "^($DNAMES2)$" || usage 1
+    shift
+    cmd="$1"
+    echo "$cmd"|grep -Eq "^(pull|$CMDS)$" || usage 1
+    shift
+
+    $SUDO -u $RUSER $SSH $RHOST "sudo -g docker $BIN -a $USER $NAME $rname $cmd"
+    echo "$cmd"|grep -Eq "^$NOREP$" || send "$dname $rname $cmd $@"
+
+  ;;
+esac
