@@ -42,11 +42,11 @@ EOM
 }
 
 send() {
-  echo -e "<pre>\n$2\n</pre>" | mail -s "$BIN $NAME $1 by $AUTH" "$MAIL"
+  echo -e "<pre>\n$2\n</pre>" | mail -s "$HOSTNAME: $BIN $NAME $1 by $AUTH" "$MAIL"
 }
 
 ###############################################################################
-AUTH="$USER"
+AUTH="$(logname)"
 if [ "$1" = '-a' ]; then shift; if [ -n "$1" ]; then AUTH="$1 via $USER"; shift; fi; fi
 
 export NAME="$1"
@@ -80,7 +80,7 @@ case "$dname" in
       exit 1
     fi
 
-    [ "$dname" = 'dev' ] && cname='$USER' || cname="$dname"
+    [ "$dname" = 'dev' ] && cname="$USER" || cname="$dname"
 
     if [ "$cmd" = 'build' ]
     then
@@ -95,18 +95,20 @@ case "$dname" in
           printf -v line '%-20s %s\n' "$img" "no source"
           out+="$line"
           echo -n "$line"
+
         else
           if [ "$dname" != 'dev' ] && output=$(git status --porcelain) && [ -n "$output" ]
           then
-            printf -v line '%-20s %s' "$img" "commit your changes first"
+            printf -v line '%-20s %s\n' "$img" "commit your changes first"
             out+="$line"
             echo -n "$line"
+
           else
             rev=$(git rev-parse --short HEAD)
             tag=$(git describe --tags 2>/dev/null)
             [ "$dname" = 'dev' ] && args="--build-arg UID=$UID"
 
-            printf -v line '%-20s %-10s %-10s %s\n' "$img" "$rev" "$tag" "$args"
+            printf -v line '+ %-20s %-10s %-10s %s\n' "$img" "$rev" "$tag" "$args"
             out+="$line"
             echo -n "$line"
 
@@ -114,15 +116,21 @@ case "$dname" in
             then
               [ -n "$tag" ] && docker tag "$img:$rev" "$img:$tag"
               docker tag "$img:$rev" "$img:latest"
+              out+="$(docker images "$img" --format "{{.ID}} $a-$cname:{{.Tag}}")\n"
+
               if [ "$dname" = 'test' ]
               then
                 docker tag "$img:$rev" "$REGISTRY/$NAME/$a:$rev"
                 docker push "$REGISTRY/$NAME/$a:$rev"
                 out+="push $REGISTRY/$NAME/$a:$rev\n"
               fi
+
+            else
+              out+="$img:$rev building failed\n"
             fi
           fi
         fi
+        out+="\n"
       done
       send "$dname $cmd $@" "$out"
 
@@ -134,7 +142,6 @@ case "$dname" in
       do
         docker pull "$REGISTRY/$NAME/$a" --all-tags
         out+="pull $REGISTRY/$NAME/$a\n"
-#        out+="$(docker images "$REGISTRY/$NAME/$a" --format "{{.Repository}}:{{.Tag}}\t{{.ID}} {{.CreatedSince}}")\n\n"
         out+="$(docker images "$REGISTRY/$NAME/$a" --format "{{.ID}} $a:{{.Tag}}")\n\n"
       done
       send "$dname $cmd $@" "$out"
@@ -146,7 +153,8 @@ case "$dname" in
         exit 1
       fi
 
-      COMPOSE_PROJECT_NAME="$cname" docker-compose -f "$BASE/$NAME/docker-compose.yml" -f "$BASE/$NAME/docker-compose.$dname.yml" "$cmd" $@
+      COMPOSE_PROJECT_NAME="$cname" docker-compose -f "$BASE/$NAME/docker-compose.yml" \
+        -f "$BASE/$NAME/docker-compose.$dname.yml" "$cmd" $@
       echo "$cmd"|grep -Eq "^$NOREP$" || send "$dname $cmd $@"
     fi
 
@@ -167,7 +175,6 @@ case "$dname" in
         out+="$line"
         echo -n "$line"
       else
-#        out+="$(docker images "$REGISTRY/$img" --format "{{.Repository}}:{{.Tag}}\t{{.ID}} {{.CreatedSince}}")\n"
         out+="$(docker images "$REGISTRY/$img" --format "{{.ID}} $a:{{.Tag}}")\n"
         out+="push $REGISTRY/$img:$cmd\n\n"
         docker push "$REGISTRY/$img:$cmd"
@@ -185,7 +192,7 @@ case "$dname" in
     echo "$cmd"|grep -Eq "^(pull|$CMDS)$" || usage 1
     shift
 
-    $SUDO -u $RUSER $SSH $RHOST "sudo -g docker $BIN -a $USER $NAME $rname $cmd"
+    $SUDO -u $RUSER $SSH $RHOST "sudo -g docker $BIN -a $(logname) $NAME $rname $cmd"
     echo "$cmd"|grep -Eq "^$NOREP$" || send "$dname $rname $cmd $@"
 
   ;;
