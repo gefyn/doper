@@ -42,24 +42,27 @@ EOM
 }
 
 send() {
-  echo -e "<pre>\n$2\n</pre>" | mail -s "$HOSTNAME: $BIN $NAME $1 by $AUTH" "$MAIL"
+  echo -e "<pre>\n$2\n</pre>" | mail -s "${AUTH}@${HOSTNAME}: $BIN $NAME $1" "$MAIL"
 }
 
 ###############################################################################
-AUTH="$(logname)"
-if [ "$1" = '-a' ]; then shift; if [ -n "$1" ]; then AUTH="$1 via $USER"; shift; fi; fi
+if [ "$1" = '-a' ]; then shift; if [ -n "$1" ]; then AUTH="*$1"; shift; fi; fi
 
 export NAME="$1"
 if [ -z "$NAME" -o "$1" = 'help' -o "$1" = 'usage' ]; then
   NAME='<project>'
   usage 1
-elif [ -x "$BASE/$NAME/conf.sh" ]; then
-  . "$BASE/$NAME/conf.sh"
+elif [ -r "$BASE/$NAME/.doperrc" ]; then
+  . "$BASE/$NAME/.doperrc"
 else
   echo "Project not found"
   exit 1
 fi
 shift
+
+duser="$(logname)"
+[ -n "$AUTH" -a "$duser" = "$RUSER" ] || AUTH="$duser"
+[ "$duser" = "$USER" ] || AUTH+="($USER)"
 
 dname="$1"
 echo "$dname"|grep -Eq "^($DNAMES1|$DNAMES2|push|remote)$" || usage 1
@@ -80,7 +83,7 @@ case "$dname" in
       exit 1
     fi
 
-    [ "$dname" = 'dev' ] && cname="$USER" || cname="$dname"
+    [ "$dname" = 'dev' ] && cname="$duser" || cname="$dname"
 
     if [ "$cmd" = 'build' ]
     then
@@ -89,17 +92,17 @@ case "$dname" in
       for a in "${SRVS[@]}"
       do
         img="$NAME/$a-$cname"
-        cd "$HOME/$a" 2>/dev/null;
+        cd "/home/$duser/$a" 2>/dev/null;
         if [ $? -ne 0 ]
         then
-          printf -v line '%-20s %s\n' "$img" "no source"
+          printf -v line '%-25s %s\n' "$img" "no source"
           out+="$line"
           echo -n "$line"
 
         else
           if [ "$dname" != 'dev' ] && output=$(git status --porcelain) && [ -n "$output" ]
           then
-            printf -v line '%-20s %s\n' "$img" "commit your changes first"
+            printf -v line '%-25s %s\n' "$img" "commit your changes first"
             out+="$line"
             echo -n "$line"
 
@@ -108,12 +111,13 @@ case "$dname" in
             tag=$(git describe --tags 2>/dev/null)
             [ "$dname" = 'dev' ] && args="--build-arg UID=$UID"
 
-            printf -v line '+ %-20s %-10s %-10s %s\n' "$img" "$rev" "$tag" "$args"
+            printf -v line '%-25s %-9s %-9s' "$img" "$rev" "$tag"
             out+="$line"
-            echo -n "$line"
+            echo "+ $line $args"
 
             if docker build . -t "$img:$rev" $args
             then
+              out+="\n"
               [ -n "$tag" ] && docker tag "$img:$rev" "$img:$tag"
               docker tag "$img:$rev" "$img:latest"
               out+="$(docker images "$img" --format "{{.ID}} $a-$cname:{{.Tag}}")\n"
@@ -126,7 +130,7 @@ case "$dname" in
               fi
 
             else
-              out+="$img:$rev building failed\n"
+              out+="FAILED\n"
             fi
           fi
         fi
@@ -171,7 +175,7 @@ case "$dname" in
       docker tag "$img-test" "$REGISTRY/$img:$cmd"
       if [ $? -ne 0 ]
       then
-        printf -v line '%-20s %s\n' "$img-test" "no image"
+        printf -v line '%-25s %s\n' "$img-test" "no image"
         out+="$line"
         echo -n "$line"
       else
@@ -192,8 +196,12 @@ case "$dname" in
     echo "$cmd"|grep -Eq "^(pull|$CMDS)$" || usage 1
     shift
 
-    $SUDO -u $RUSER $SSH $RHOST "sudo -g docker $BIN -a $(logname) $NAME $rname $cmd"
-    echo "$cmd"|grep -Eq "^$NOREP$" || send "$dname $rname $cmd $@"
+    if [ "$EUID" -ne 0 ]; then
+       echo "Run it with sudo and God bless you"
+    else
+      $SUDO -u $RUSER $SSH $RHOST "sudo -g docker $BIN -a $duser $NAME $rname $cmd"
+#      echo "$cmd"|grep -Eq "^$NOREP$" || send "$dname $rname $cmd $@"
+    fi
 
   ;;
 esac
