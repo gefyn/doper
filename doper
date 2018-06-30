@@ -15,25 +15,25 @@ usage() {
 Usage:
   $BIN $NAME ($DNAMES1) (build|$CMDS) [OPTS]
   $BIN $NAME ($DNAMES2) (pull|$CMDS) [OPTS]
-  $BIN $NAME push ($DNAMES2)
   $BIN $NAME remote ($DNAMES2) (pull|$CMDS)
-
-Shortest path:
-  $BIN $NAME test build
-  $BIN $NAME push prod
-  sudo $BIN $NAME remote prod pull
-  sudo $BIN $NAME remote prod up
+  $BIN $NAME push ($DNAMES2)
 
 Safe path:
   sudo -g docker $BIN $NAME dev build
   sudo -g docker $BIN $NAME dev up -d
-  $BIN $NAME test build
-  $BIN $NAME test up -d
-  $BIN $NAME push staging
+  sudo -g docker $BIN $NAME test build
+  sudo -g docker $BIN $NAME test up -d
+  sudo -g docker $BIN $NAME push staging
   sudo $BIN $NAME remote staging pull
   sudo $BIN $NAME remote staging up
   sudo $BIN $NAME remote staging down
-  $BIN $NAME push prod
+  sudo -g docker $BIN $NAME push prod
+  sudo $BIN $NAME remote prod pull
+  sudo $BIN $NAME remote prod up
+
+Direct path:
+  sudo -g docker $BIN $NAME test build
+  sudo -g docker $BIN $NAME push prod
   sudo $BIN $NAME remote prod pull
   sudo $BIN $NAME remote prod up
 EOM
@@ -65,7 +65,7 @@ duser="$(logname)"
 [ "$duser" = "$USER" ] || AUTH+="($USER)"
 
 dname="$1"
-echo "$dname"|grep -Eq "^($DNAMES1|$DNAMES2|push|remote)$" || usage 1
+echo "$dname"|grep -Eq "^($DNAMES1|$DNAMES2|remote|push|deliver|deploy)$" || usage 1
 shift
 
 case "$dname" in
@@ -80,6 +80,11 @@ case "$dname" in
 
     if [ ! -f "$BASE/$NAME/docker-compose.$dname.yml" ]; then
       echo "$dname not allowed here"
+      exit 1
+    fi
+
+    if [ "$EUID" -eq 0 ]; then
+      echo "Don't run me as root"
       exit 1
     fi
 
@@ -118,12 +123,12 @@ case "$dname" in
             if docker build . -t "$img:$rev" $args
             then
               out+="\n"
-              [ -n "$tag" ] && docker tag "$img:$rev" "$img:$tag"
               docker tag "$img:$rev" "$img:latest"
               out+="$(docker images "$img" --format "{{.ID}} $a-$cname:{{.Tag}}")\n"
 
               if [ "$dname" = 'test' ]
               then
+                [ -n "$tag" ] && docker tag "$img:$rev" "$img:$tag"
                 docker tag "$img:$rev" "$REGISTRY/$NAME/$a:$rev"
                 docker push "$REGISTRY/$NAME/$a:$rev"
                 out+="push $REGISTRY/$NAME/$a:$rev\n"
@@ -157,9 +162,26 @@ case "$dname" in
         exit 1
       fi
 
-      COMPOSE_PROJECT_NAME="$cname" docker-compose -f "$BASE/$NAME/docker-compose.yml" \
+      DNAME="$cname" docker-compose -p "$NAME-$cname" -f "$BASE/$NAME/docker-compose.yml" \
         -f "$BASE/$NAME/docker-compose.$dname.yml" "$cmd" $@
       echo "$cmd"|grep -Eq "^$NOREP$" || send "$dname $cmd $@"
+    fi
+
+  ;;
+  remote)
+
+    rname="$1"
+    echo "$rname"|grep -Eq "^($DNAMES2)$" || usage 1
+    shift
+    cmd="$1"
+    echo "$cmd"|grep -Eq "^(pull|$CMDS)$" || usage 1
+    shift
+
+    if [ "$EUID" -ne 0 ]; then
+       echo "Run me with sudo and God bless you"
+    else
+      $SUDO -u $RUSER $SSH $RHOST "sudo -g docker $BIN -a $duser $NAME $rname $cmd $@"
+#      echo "$cmd"|grep -Eq "^$NOREP$" || send "$dname $rname $cmd $@"
     fi
 
   ;;
@@ -187,20 +209,20 @@ case "$dname" in
     send "$dname $cmd $@" "$out"
 
   ;;
-  remote)
+  deliver|deploy)
 
-    rname="$1"
-    echo "$rname"|grep -Eq "^($DNAMES2)$" || usage 1
-    shift
     cmd="$1"
-    echo "$cmd"|grep -Eq "^(pull|$CMDS)$" || usage 1
+    echo "$cmd"|grep -Eq "^($DNAMES2)$" || usage 1
     shift
 
-    if [ "$EUID" -ne 0 ]; then
-       echo "Run it with sudo and God bless you"
+    if [ "$EUID" -eq 0 ]; then
+      echo "Run me without sudo and God bless you"
     else
-      $SUDO -u $RUSER $SSH $RHOST "sudo -g docker $BIN -a $duser $NAME $rname $cmd"
-#      echo "$cmd"|grep -Eq "^$NOREP$" || send "$dname $rname $cmd $@"
+	exit
+      [ $dname = 'deploy' ] && $SUDO -g docker "$BIN" "$NAME" test build
+      $SUDO -g docker "$BIN" "$NAME" push "$cmd"
+      $SUDO "$BIN" "$NAME" remote "$cmd" pull 
+      $SUDO "$BIN" "$NAME" remote "$cmd" up
     fi
 
   ;;
