@@ -96,42 +96,49 @@ case "$dname" in
 
       for a in "${SRVS[@]}"
       do
-        img="$NAME/$a-$cname"
+        img="$NAME/$a"
+        [ "$dname" = 'dev' ] && img+="-$cname"
+        [ "$dname" = 'dev' ] && repo="$img" || repo="$REGISTRY/$img"
+
         cd "/home/$duser/$a" 2>/dev/null;
         if [ $? -ne 0 ]
         then
-          printf -v line '%-25s %s\n' "$img" "no source"
+          printf -v line '%-25s %s\n' "$repo" "no source"
           out+="$line"
-          echo -n "$line"
+          echo -e "$line"
 
         else
           if [ "$dname" != 'dev' ] && output=$(git status --porcelain) && [ -n "$output" ]
           then
-            printf -v line '%-25s %s\n' "$img" "commit your changes first"
+            printf -v line '%-25s %s\n' "$repo" "commit your changes first"
             out+="$line"
-            echo -n "$line"
+            echo -e "$line"
 
           else
             rev=$(git rev-parse --short HEAD)
             tag=$(git describe --tags 2>/dev/null)
             [ "$dname" = 'dev' ] && args="--build-arg UID=$UID"
 
-            printf -v line '%-25s %-9s %-9s' "$img" "$rev" "$tag"
+            printf -v line '%-25s %-9s %-9s' "$repo" "$rev" "$tag"
             out+="$line"
-            echo "+ $line $args"
+            echo -e "\n+ $line $args\n"
 
-            if docker build . -t "$img:$rev" $args
+            if docker build . -t "$repo:$rev" $args
             then
               out+="\n"
-              docker tag "$img:$rev" "$img:latest"
-              out+="$(docker images "$img" --format "{{.ID}} $a-$cname:{{.Tag}}")\n"
+              docker tag "$repo:$rev" "$repo:latest"
+              out+="$(docker images "$repo" --format "{{.ID}} $img:{{.Tag}}")\n"
 
               if [ "$dname" = 'test' ]
               then
-                [ -n "$tag" ] && docker tag "$img:$rev" "$img:$tag"
-                docker tag "$img:$rev" "$REGISTRY/$NAME/$a:$rev"
-                docker push "$REGISTRY/$NAME/$a:$rev"
-                out+="push $REGISTRY/$NAME/$a:$rev\n"
+                docker push "$repo:$rev"
+                out+="push $repo:$rev\n"
+                if [ -n "$tag" ]
+                then
+                  docker tag "$repo:$rev" "$repo:$tag"
+                  docker push "$repo:$tag"
+                  out+="push $repo:$tag\n"
+                fi
               fi
 
             else
@@ -145,15 +152,16 @@ case "$dname" in
 
     elif [ "$cmd" = 'pull' ]
     then
-      echo "$dname"|grep -Eq "^($DNAMES1)$" && usage 1
+      echo "$dname"|grep -Eq "^($DNAMES2)$" || usage 1
 
       for a in "${SRVS[@]}"
       do
-        docker pull "$REGISTRY/$NAME/$a" --all-tags
-        out+="pull $REGISTRY/$NAME/$a\n"
-        out+="$(docker images "$REGISTRY/$NAME/$a" --format "{{.ID}} $a:{{.Tag}}")\n\n"
+        repo="$REGISTRY/$NAME/$a"
+        docker pull "$repo" --all-tags
+        out+="pull $repo\n"
+        out+="$(docker images "$repo" --format "{{.ID}} $repo:{{.Tag}}")\n\n"
       done
-      send "$dname $cmd $@" "$out"
+      send "$dname $cmd" "$out"
 
     else
       for p in "${PORTS[@]}"; do [ "${p%%:*}" = "$cname" ] && export PORT="${p##*:}"; done
@@ -193,20 +201,20 @@ case "$dname" in
 
     for a in "${SRVS[@]}"
     do
-      img="$NAME/$a"
-      docker tag "$img-test" "$REGISTRY/$img:$cmd"
+      repo="$REGISTRY/$NAME/$a"
+      docker tag "$repo:latest" "$repo:$cmd"
       if [ $? -ne 0 ]
       then
-        printf -v line '%-25s %s\n' "$img-test" "no image"
+        printf -v line '%-25s %s\n' "$repo" "no image"
         out+="$line"
         echo -n "$line"
       else
-        out+="$(docker images "$REGISTRY/$img" --format "{{.ID}} $a:{{.Tag}}")\n"
-        out+="push $REGISTRY/$img:$cmd\n\n"
-        docker push "$REGISTRY/$img:$cmd"
+        out+="$(docker images "$repo" --format "{{.ID}} $repo:{{.Tag}}")\n"
+        out+="push $repo:$cmd\n\n"
+        docker push "$repo:$cmd"
       fi
     done
-    send "$dname $cmd $@" "$out"
+    send "$dname $cmd" "$out"
 
   ;;
   deliver|deploy)
