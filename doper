@@ -1,48 +1,70 @@
 #!/bin/bash
 
-DNAMES1="dev|test"
-DNAMES2="staging|prod"
-CMDS="up|down|ps|images|logs|restart|stop|start"
-NOREP="(ps|images|logs)"
 BASE="/opt/docker"
 SUDO="/usr/bin/sudo"
 SSH="/usr/bin/ssh"
+DNAMES1="dev|test"
+DNAMES2="staging|prod"
+CMDS="up|down|ps|images|logs|restart|stop|start"
+NOREP="ps|images|logs"
+OPS="remote|build|push|pull|deliver|deploy"
 BIN=$(basename "$0")
 
 ###############################################################################
 usage() {
   read -r -d '' usage << EOM
+Docker operations
+
 Usage:
-  $BIN $NAME ($DNAMES1) (build|$CMDS) [OPTS]
-  $BIN $NAME ($DNAMES2) (pull|$CMDS) [OPTS]
-  $BIN $NAME remote ($DNAMES2) (pull|$CMDS)
+  $BIN $NAME ($DNAMES1|$DNAMES2) ($CMDS) [OPTS]
+  $BIN $NAME build ($DNAMES1)
   $BIN $NAME push ($DNAMES2)
+  $BIN $NAME pull
+  $BIN $NAME deliver ($DNAMES2)
+  $BIN $NAME deploy ($DNAMES2)
+  $BIN $NAME remote ($DNAMES2) ($CMDS) [OPTS]
+  $BIN $NAME remote pull
 
 Safe path:
-  sudo -g docker $BIN $NAME dev build
+  sudo -g docker $BIN $NAME build dev
   sudo -g docker $BIN $NAME dev up -d
-  sudo -g docker $BIN $NAME test build
+  sudo -g docker $BIN $NAME build test
   sudo -g docker $BIN $NAME test up -d
   sudo -g docker $BIN $NAME push staging
-  sudo $BIN $NAME remote staging pull
+  sudo $BIN $NAME remote pull
   sudo $BIN $NAME remote staging up
   sudo $BIN $NAME remote staging down
   sudo -g docker $BIN $NAME push prod
-  sudo $BIN $NAME remote prod pull
+  sudo $BIN $NAME remote pull
   sudo $BIN $NAME remote prod up
 
 Direct path:
-  sudo -g docker $BIN $NAME test build
+  sudo -g docker $BIN $NAME build test
   sudo -g docker $BIN $NAME push prod
-  sudo $BIN $NAME remote prod pull
+  sudo $BIN $NAME remote pull
   sudo $BIN $NAME remote prod up
+
+Direct short path:
+  sudo -g docker $BIN $NAME build test
+  $BIN $NAME deliver prod
+
+Emergency path:
+  $BIN $NAME deploy prod
+
+Ellochka path:
+  $BIN $NAME deploy dev
+  $BIN $NAME deploy test
+  $BIN $NAME deploy staging
+  $BIN $NAME deploy prod
 EOM
   echo "$usage"
   exit "$1"
 }
 
 send() {
-  echo -e "<pre>\n$2\n</pre>" | mail -s "${AUTH}@${HOSTNAME}: $BIN $NAME $1" "$MAIL"
+#  echo -e "<pre>\n$2\n</pre>" | mail -s "${AUTH}@${HOSTNAME}: $BIN $NAME $1" "$MAIL"
+echo -e "$1"
+echo -e "$2"
 }
 
 ###############################################################################
@@ -61,11 +83,12 @@ fi
 shift
 
 duser="$(logname)"
+duser="$USER"
 [ -n "$AUTH" -a "$duser" = "$RUSER" ] || AUTH="$duser"
 [ "$duser" = "$USER" ] || AUTH+="($USER)"
 
 dname="$1"
-echo "$dname"|grep -Eq "^($DNAMES1|$DNAMES2|remote|push|deliver|deploy)$" || usage 1
+echo "$dname"|grep -Eq "^($DNAMES1|$DNAMES2|$OPS)$" || usage 1
 shift
 
 case "$dname" in
@@ -73,7 +96,7 @@ case "$dname" in
   dev|test|staging|prod)
 
     cmd="$1"
-    echo "$cmd"|grep -Eq "^($CMDS|build|pull)$" || usage 1
+    echo "$cmd"|grep -Eq "^($CMDS)$" || usage 1
     shift
 
     echo "$@"|grep -Eq "build" && usage 2
@@ -90,148 +113,153 @@ case "$dname" in
 
     [ "$dname" = 'dev' ] && cname="$duser" || cname="$dname"
 
-    if [ "$cmd" = 'build' ]
-    then
-      echo "$dname"|grep -Eq "^($DNAMES2)$" && usage 1
-
-      for a in "${SRVS[@]}"
-      do
-        img="$NAME/$a"
-        [ "$dname" = 'dev' ] && img+="-$cname"
-        [ "$dname" = 'dev' ] && repo="$img" || repo="$REGISTRY/$img"
-
-        cd "/home/$duser/$a" 2>/dev/null;
-        if [ $? -ne 0 ]
-        then
-          printf -v line '%-25s %s\n' "$repo" "no source"
-          out+="$line"
-          echo -e "$line"
-
-        else
-          if [ "$dname" != 'dev' ] && output=$(git status --porcelain) && [ -n "$output" ]
-          then
-            printf -v line '%-25s %s\n' "$repo" "commit your changes first"
-            out+="$line"
-            echo -e "$line"
-
-          else
-            rev=$(git rev-parse --short HEAD)
-            tag=$(git describe --tags 2>/dev/null)
-            [ "$dname" = 'dev' ] && args="--build-arg UID=$UID"
-
-            printf -v line '%-25s %-9s %-9s' "$repo" "$rev" "$tag"
-            out+="$line"
-            echo -e "\n+ $line $args\n"
-
-            if docker build . -t "$repo:$rev" $args
-            then
-              out+="\n"
-              docker tag "$repo:$rev" "$repo:latest"
-              out+="$(docker images "$repo" --format "{{.ID}} $img:{{.Tag}}")\n"
-
-              if [ "$dname" = 'test' ]
-              then
-                docker push "$repo:$rev"
-                out+="push $repo:$rev\n"
-                if [ -n "$tag" ]
-                then
-                  docker tag "$repo:$rev" "$repo:$tag"
-                  docker push "$repo:$tag"
-                  out+="push $repo:$tag\n"
-                fi
-              fi
-
-            else
-              out+="FAILED\n"
-            fi
-          fi
-        fi
-        out+="\n"
-      done
-      send "$dname $cmd $@" "$out"
-
-    elif [ "$cmd" = 'pull' ]
-    then
-      echo "$dname"|grep -Eq "^($DNAMES2)$" || usage 1
-
-      for a in "${SRVS[@]}"
-      do
-        repo="$REGISTRY/$NAME/$a"
-        docker pull "$repo" --all-tags
-        out+="pull $repo\n"
-        out+="$(docker images "$repo" --format "{{.ID}} $repo:{{.Tag}}")\n\n"
-      done
-      send "$dname $cmd" "$out"
-
-    else
-      for p in "${PORTS[@]}"; do [ "${p%%:*}" = "$cname" ] && export PORT="${p##*:}"; done
-      if [ -z "$PORT" ]; then
-        echo "User not found"
-        exit 1
-      fi
-
-      DNAME="$cname" docker-compose -p "$NAME-$cname" -f "$BASE/$NAME/docker-compose.yml" \
-        -f "$BASE/$NAME/docker-compose.$dname.yml" "$cmd" $@
-      echo "$cmd"|grep -Eq "^$NOREP$" || send "$dname $cmd $@"
+    for p in "${PORTS[@]}"; do [ "${p%%:*}" = "$cname" ] && export PORT="${p##*:}"; done
+    if [ -z "$PORT" ]; then
+      echo "User not found"
+      exit 1
     fi
+
+    DNAME="$cname" docker-compose -p "$NAME-$cname" -f "$BASE/$NAME/docker-compose.yml" \
+      -f "$BASE/$NAME/docker-compose.$dname.yml" "$cmd" $@
+    echo "$cmd"|grep -Eq "^($NOREP)$" || send "$dname $cmd $@"
 
   ;;
   remote)
 
     rname="$1"
-    echo "$rname"|grep -Eq "^($DNAMES2)$" || usage 1
+    echo "$rname"|grep -Eq "^($DNAMES2|pull)$" || usage 1
     shift
-    cmd="$1"
-    echo "$cmd"|grep -Eq "^(pull|$CMDS)$" || usage 1
-    shift
+
+    if [ "$rname" != 'pull' ]; then
+      cmd="$1"
+      echo "$cmd"|grep -Eq "^($CMDS)$" || usage 1
+      shift
+    fi
 
     if [ "$EUID" -ne 0 ]; then
        echo "Run me with sudo and God bless you"
     else
       $SUDO -u $RUSER $SSH $RHOST "sudo -g docker $BIN -a $duser $NAME $rname $cmd $@"
-#      echo "$cmd"|grep -Eq "^$NOREP$" || send "$dname $rname $cmd $@"
+#      echo "$cmd"|grep -Eq "^($NOREP)$" || send "$dname $rname $cmd $@"
     fi
+
+  ;;
+  build)
+
+    oname="$1"
+    echo "$oname"|grep -Eq "^($DNAMES1)$" || usage 1
+    shift
+
+    if [ ! -f "$BASE/$NAME/docker-compose.$oname.yml" ]; then
+      echo "$oname not allowed here"
+      exit 1
+    fi
+
+    for a in "${SRVS[@]}"
+    do
+      repo="$NAME/$a"
+      [ "$oname" = 'dev' ] && repo="-$cname" || repo="$REGISTRY/$repo"
+
+      if cd "/home/$duser/$a" 2>/dev/null
+      then
+        if [ "$oname" != 'dev' ] && output=$(git status --porcelain) && [ -n "$output" ]
+        then
+          printf -v line '%-25s %s\n' "$repo" "commit your changes first"
+          out+="$line"
+          echo -e "$line"
+
+        else
+          rev=$(git rev-parse --short HEAD)
+          tag=$(git describe --tags 2>/dev/null)
+          [ "$oname" = 'dev' ] && args="--build-arg UID=$UID"
+
+          printf -v line '%-25s %-9s %-9s' "$repo" "$rev" "$tag"
+          out+="$line"
+          echo -e "\n+ $line $args\n"
+
+          if docker build . -t "$repo:$rev" $args
+          then
+            out+="\n"
+            docker tag "$repo:$rev" "$repo:latest"
+            out+="$(docker images "$repo" --format "{{.ID}} $repo:{{.Tag}}")\n"
+
+            [ -n "$tag" -a "$oname" != 'dev' ] && docker tag "$repo:$rev" "$repo:$tag"
+
+          else
+            out+="FAILED\n"
+          fi
+        fi
+      else
+        printf -v line '%-25s %s\n' "$repo" "no source"
+        out+="$line"
+        echo -e "$line"
+      fi
+
+      out+="\n"
+    done
+    send "$dname $oname" "$out"
 
   ;;
   push)
 
-    cmd="$1"
-    echo "$cmd"|grep -Eq "^($DNAMES2)$" || usage 1
+    oname="$1"
+    echo "$oname"|grep -Eq "^($DNAMES2)$" || usage 1
     shift
 
     for a in "${SRVS[@]}"
     do
       repo="$REGISTRY/$NAME/$a"
-      docker tag "$repo:latest" "$repo:$cmd"
+      docker tag "$repo:latest" "$repo:$oname"
       if [ $? -ne 0 ]
       then
-        printf -v line '%-25s %s\n' "$repo" "no image"
+        printf -v line '%-25s %s\n' "$repo:latest" "no image"
         out+="$line"
         echo -n "$line"
       else
         out+="$(docker images "$repo" --format "{{.ID}} $repo:{{.Tag}}")\n"
-        out+="push $repo:$cmd\n\n"
-        docker push "$repo:$cmd"
+        out+="push $repo\n\n"
+        docker push "$repo"
       fi
     done
-    send "$dname $cmd" "$out"
+    send "$dname $oname" "$out"
+
+  ;;
+  pull)
+
+    for a in "${SRVS[@]}"
+    do
+      repo="$REGISTRY/$NAME/$a"
+      docker pull "$repo" --all-tags
+      out+="pull $repo\n"
+      out+="$(docker images "$repo" --format "{{.ID}} $repo:{{.Tag}}")\n\n"
+    done
+    send "$dname" "$out"
 
   ;;
   deliver|deploy)
 
-    cmd="$1"
-    echo "$cmd"|grep -Eq "^($DNAMES2)$" || usage 1
+    oname="$1"
+    echo "$oname"|grep -Eq "^($DNAMES2)$" || usage 1
     shift
 
-    if [ "$EUID" -eq 0 ]; then
+    if [ -n "$SUDO_USER" ]; then
       echo "Run me without sudo and God bless you"
     else
-	exit
-      [ $dname = 'deploy' ] && $SUDO -g docker "$BIN" "$NAME" test build
-      $SUDO -g docker "$BIN" "$NAME" push "$cmd"
-      $SUDO "$BIN" "$NAME" remote "$cmd" pull 
-      $SUDO "$BIN" "$NAME" remote "$cmd" up
+      if [ $dname = 'deploy' ]
+      then
+        [ "$oname" = 'dev' ] && bname="dev" || bname="test"
+        $SUDO -g docker "$BIN" "$NAME" build "$bname"
+      fi
+      if [ -r "$BASE/$NAME/docker-compose.$oname.yml" ]
+      then
+        $SUDO -g docker "$BIN" "$NAME" "$oname" up -d
+      else
+        $SUDO -g docker "$BIN" "$NAME" push "$oname"
+        $SUDO "$BIN" "$NAME" remote pull 
+        $SUDO "$BIN" "$NAME" remote "$oname" up -d
+      fi
     fi
 
   ;;
+
 esac
