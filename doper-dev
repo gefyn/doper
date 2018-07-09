@@ -1,20 +1,22 @@
 #!/bin/bash
 
+export NAME=login
+PORTS=("test:303" "d2d4:304" "ndoroshenko:305")
+SRVS=("api" "lk" "edu")
+MAIL="email2tg-test@misis.ru"
 CMDS="(build|up|down|ps|images|logs|restart|stop|start)"
 CMDS2="(staging|prod)"
 CMDS3="(pull|up|down|ps|images|logs|restart|stop|start)"
 DNAMES="dev|test"
 DNAMES2="push"
 DNAMES3="staging|prod"
-PORTS=("test:303" "d2d4:304" "ndoroshenko:305")
-SRVS=("api" "lk" "edu")
+ACTNS="(up|down|restart|stop|start|pull)"
 BASE="/opt/docker"
 REGISTRY="docker.misis.ru:4443"
-export NAME=login
 
 ###############################################################################
-bin=$(basename "$0")
 usage() {
+  bin=$(basename "$0")
   echo "Usage:"
   echo "  $bin ($DNAMES) $CMDS [OPTS]"
   echo "  $bin ($DNAMES2) $CMDS2"
@@ -28,6 +30,10 @@ usage() {
   echo "  $bin staging up"
   echo "  $bin prod images"
   exit "$1"
+}
+
+send() {
+  echo -e "$2" | mail -s "docker $NAME: $1 by $USER" "$MAIL"
 }
 
 [ "$1" = 'help' -o "$1" = 'usage' ] && usage 0
@@ -52,33 +58,37 @@ case "$dname" in
       for a in "${SRVS[@]}"; do
         cd "$HOME/$a" || usage 1
 
-        if output=$(git status --porcelain) && [ -n "$output" ]; then
+        if [ "$dname" != 'dev' ] && output=$(git status --porcelain) && [ -n "$output" ]; then
           echo "$a: commit your changes first"
         else
           img="$NAME/$a-$pname"
           rev=$(git rev-parse --short HEAD)
-         # tag=$(git describe --tags $(git rev-list --tags --max-count=1))
           tag=$(git describe --tags 2>/dev/null)
-          printf "%-20s %-10s %-10s\n" $img $rev $tag
+          [ "$dname" = 'dev' ] && args="--build-arg UID=$UID"
+          printf -v line '%-20s %-10s %-10s\n' "$img" "$rev" "$tag"
+          out+=$line
 
-          if docker build . -t "$img:$rev"; then
+          printf '%-20s %-10s %-10s\n' "$img" "$rev" "$tag" "$args"
+          if docker build . -t "$img:$rev" $args; then
             [ -n "$tag" ] && docker tag "$img:$rev" "$img:$tag"
+            docker tag "$img:$rev" "$img:latest"
             if [ "$dname" = 'test' ]; then
-              docker tag "$img:$rev" "$img:latest"
               docker tag "$img:$rev" "$REGISTRY/$NAME/$a:$rev"
               docker push "$REGISTRY/$NAME/$a:$rev"
+              out+="push $REGISTRY/$NAME/$a:$rev\n"
             fi
           fi
         fi
       done
+      send "$dname $cmd $@" "$out"
     else
       for p in "${PORTS[@]}"; do [ "${p%%:*}" = "$pname" ] && export PORT="${p##*:}"; done
       if [ -z "$PORT" ]; then
         echo "User not found"
         exit 1
       fi
-
       COMPOSE_PROJECT_NAME="$pname" docker-compose -f "$BASE/$NAME/docker-compose.yml" -f "$BASE/$NAME/docker-compose.$dname.yml" "$cmd" $@
+      echo "$cmd"|grep -Eq "^$ACTNS$" && send "$dname $cmd $@"
     fi
 
   ;;
@@ -92,7 +102,10 @@ case "$dname" in
       img="$NAME/$a"
       docker tag "$img-test" "$REGISTRY/$img:$cmd"
       docker push "$REGISTRY/$img:$cmd"
+      out+="$(docker images "$REGISTRY/$img")\n"
+      out+="push $REGISTRY/$img:$cmd\n"
     done
+    send "$dname $cmd $@" "$out"
 
   ;;
   staging|prod)
@@ -102,6 +115,7 @@ case "$dname" in
     shift
 
     sudo -u servcraft ssh rendr "sudo docker-login $dname $cmd"
+    echo "$cmd"|grep -Eq "^$ACTNS$" && send "$dname $cmd $@"
 
   ;;
 esac
