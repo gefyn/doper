@@ -18,23 +18,23 @@ Docker operational tool
 
 Usage:
   $BIN $NAME ($DNAMES1|$DNAMES2|oldprod) ($CMDS) [OPTS]
-  $BIN $NAME build ($DNAMES1)
-  $BIN $NAME push ($DNAMES2)
-  $BIN $NAME pull ($DNAMES2)
+  $BIN $NAME build ($DNAMES1) [srv1 srv2 ..]
+  $BIN $NAME push ($DNAMES2) [srv1 srv2 ..]
+  $BIN $NAME pull ($DNAMES2) [srv1 srv2 ..]
   $BIN $NAME remote ($DNAMES2) ($CMDS) [OPTS]
-  $BIN $NAME remote pull ($DNAMES2)
+  $BIN $NAME remote pull ($DNAMES2) [srv1 srv2 ..]
   $BIN $NAME deliver ($DNAMES1|$DNAMES2)
   $BIN $NAME deploy ($DNAMES1|$DNAMES2)
 
 Safe path:
   sudo -g docker $BIN $NAME build dev
-  sudo -g docker $BIN $NAME dev up -d [and make actual dev-t]
+  sudo -g docker $BIN $NAME dev up -d (and make actual dev-t)
   sudo -g docker $BIN $NAME build test
-  sudo -g docker $BIN $NAME test up -d [and make actual test]
+  sudo -g docker $BIN $NAME test up -d (and make actual test)
   sudo -g docker $BIN $NAME test down
   sudo -g docker $BIN $NAME push staging
   sudo $BIN $NAME remote pull staging
-  sudo $BIN $NAME remote staging up -d [and make actual test]
+  sudo $BIN $NAME remote staging up -d (and make actual test)
   sudo $BIN $NAME remote staging down
   sudo -g docker $BIN $NAME push prod
   sudo $BIN $NAME remote pull prod
@@ -66,7 +66,7 @@ report() {
 
 log() {
   line="${AUTH}@${HOSTNAME}: $BIN $NAME $1"
-  [ "$RET" -ne 0 ] && line+=" FAILED"
+  [ "$RET" -ne 0 ] && line+=" #"
   printf "%s => %s\n" "$(/bin/date +%Y-%m-%d\ %H:%M:%S)" "$line" 2>/dev/null >> "$BASE/doper.log"
 }
 
@@ -167,6 +167,8 @@ case "$dname" in
 
     [ "$oname" = 'dev' ] && cname="$DUSER" || cname="$dname"
 
+    [ "$#" -ne 0 ] && SRVS=( "$@" )
+
     for a in "${SRVS[@]}"
     do
       if [ "$oname" = 'dev' ]; then
@@ -179,14 +181,21 @@ case "$dname" in
 
       if cd "/home/$DUSER/$a" 2>/dev/null
       then
-        sta=$(git status --porcelain 2>/dev/null)
         rev=$(git rev-parse --short HEAD 2>/dev/null)
+        bra=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+        sta=$(git status --porcelain 2>/dev/null)
         tag=$(git describe --tags 2>/dev/null)
         tag="${tag%%-*}"
 
         if [ -z "$rev" ]
         then
           printf -v line '%-17s %s\n' "$img" "no git"
+          out+="$line"
+          RET=1
+
+        elif [ "$oname" != 'dev' -a "$bra" != 'master' ]
+        then
+          printf -v line '%-17s %s\n' "$img" "wrong branch"
           out+="$line"
           RET=1
 
@@ -228,7 +237,7 @@ case "$dname" in
       fi
       out+="\n"
     done
-    report "$dname $oname" "$out"
+    report "$dname $oname $@" "$out"
     log "$dname $oname $@"
 
   ;;
@@ -237,6 +246,8 @@ case "$dname" in
     oname="$1"
     echo "$oname"|grep -Eq "^($DNAMES2)$" || usage 1
     shift
+
+    [ "$#" -ne 0 ] && SRVS=( "$@" )
 
     for a in "${SRVS[@]}"
     do
@@ -262,7 +273,7 @@ case "$dname" in
       fi
       out+="\n"
     done
-    report "$dname $oname" "$out"
+    report "$dname $oname $@" "$out"
     log "$dname $oname $@"
 
   ;;
@@ -271,6 +282,8 @@ case "$dname" in
     oname="$1"
     echo "$oname"|grep -Eq "^($DNAMES2)$" || usage 1
     shift
+
+    [ "$#" -ne 0 ] && SRVS=( "$@" )
 
     for a in "${SRVS[@]}"
     do
@@ -288,7 +301,7 @@ case "$dname" in
       [ "$RET" -ne 0 ] && out+=" FAILED"
       out+="\n$(docker images "$repo" --format "| {{.ID}} $a:{{.Tag}}")\n\n"
     done
-    report "$dname $oname" "$out"
+    report "$dname $oname $@" "$out"
     log "$dname $oname $@"
 
   ;;
