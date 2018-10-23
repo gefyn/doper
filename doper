@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 BASE="/opt/docker"
 SUDO="/usr/bin/sudo"
@@ -14,17 +14,17 @@ DUSER="$(logname)"
 ###############################################################################
 usage() {
   /bin/cat <<EOM
-Docker operational tool
+Docker operations
 
 Usage:
   $BIN $NAME ($DNAMES1|$DNAMES2|oldprod) ($CMDS) [OPTS]
-  $BIN $NAME build ($DNAMES1) [srv1 srv2 ..]
-  $BIN $NAME push ($DNAMES2) [srv1 srv2 ..]
-  $BIN $NAME pull ($DNAMES2) [srv1 srv2 ..]
+  $BIN $NAME build ($DNAMES1) [service1 service2 ..]
+  $BIN $NAME push ($DNAMES2) [service1 service2 ..]
+  $BIN $NAME pull ($DNAMES2) [service1 service2 ..]
   $BIN $NAME remote ($DNAMES2) ($CMDS) [OPTS]
-  $BIN $NAME remote pull ($DNAMES2) [srv1 srv2 ..]
-  $BIN $NAME deliver ($DNAMES1|$DNAMES2)
-  $BIN $NAME deploy ($DNAMES1|$DNAMES2)
+  $BIN $NAME remote pull ($DNAMES2) [service1 service2 ..]
+  $BIN $NAME deliver ($DNAMES1|$DNAMES2) [service1 service2 ..]
+  $BIN $NAME deploy ($DNAMES1|$DNAMES2) [service1 service2 ..]
 
 Safe path:
   sudo -g docker $BIN $NAME build dev
@@ -124,12 +124,12 @@ case "$dname" in
       exit 1
     fi
 
-    echo "$cmd"|grep -Eq "^($NOREP)$" || [ "$dname" = 'dev' ] || report "$dname $cmd $@"
+    echo "$cmd"|grep -Eq "^($NOREP)$" || [ "$dname" = 'dev' ] || report "$dname $cmd $*"
 
     DNAME="$cname" docker-compose -p "$NAME-$cname" -f "$BASE/$NAME/docker-compose.yml" \
-      -f "$BASE/$NAME/docker-compose.$dname.yml" "$cmd" $@
+      -f "$BASE/$NAME/docker-compose.$dname.yml" "$cmd" "$@"
     RET=$?
-    log "$dname $cmd $@"
+    log "$dname $cmd $*"
 
   ;;
   remote)
@@ -151,7 +151,7 @@ case "$dname" in
 
     $SUDO -u $RUSER $SSH $RHOST "sudo -g docker $BIN -a $DUSER $NAME $rname $cmd $@"
     RET=$?
-    log "$dname $rname $cmd $@"
+    log "$dname $rname $cmd $*"
 
   ;;
   build)
@@ -218,7 +218,7 @@ case "$dname" in
             docker tag "$repo:$rev" "$repo:latest"
 
             if [ "$oname" = 'dev' ]; then
-              imglist=$(docker images "$repo" -q|tail -n+4|uniq)
+              imglist=$(docker images "$repo" -q|tail -n+5|uniq)
               [ -n "$imglist" ] && docker rmi $imglist -f
             else
               [ -n "$tag" ] && docker tag "$repo:$rev" "$repo:$tag"
@@ -237,8 +237,8 @@ case "$dname" in
       fi
       out+="\n"
     done
-    report "$dname $oname $@" "$out"
-    log "$dname $oname $@"
+    report "$dname $oname $*" "$out"
+    log "$dname $oname $*"
 
   ;;
   push)
@@ -273,8 +273,8 @@ case "$dname" in
       fi
       out+="\n"
     done
-    report "$dname $oname $@" "$out"
-    log "$dname $oname $@"
+    report "$dname $oname $*" "$out"
+    log "$dname $oname $*"
 
   ;;
   pull)
@@ -301,8 +301,8 @@ case "$dname" in
       [ "$RET" -ne 0 ] && out+=" FAILED"
       out+="\n$(docker images "$repo" --format "| {{.ID}} $a:{{.Tag}}")\n\n"
     done
-    report "$dname $oname $@" "$out"
-    log "$dname $oname $@"
+    report "$dname $oname $*" "$out"
+    log "$dname $oname $*"
 
   ;;
   deliver|deploy)
@@ -319,21 +319,21 @@ case "$dname" in
     if [ $dname = 'deploy' ]
     then
       [ "$oname" = 'dev' ] && bname="dev" || bname="test"
-      [ -r "$BASE/$NAME/docker-compose.$bname.yml" ] && $SUDO -g docker "$BIN" "$NAME" build "$bname"
+      [ -r "$BASE/$NAME/docker-compose.$bname.yml" ] && $SUDO -g docker "$BIN" "$NAME" build "$bname" "$@"
     fi
 
     if [ -r "$BASE/$NAME/docker-compose.$oname.yml" ]
     then
-      echo "$oname"|grep -Eq "^($DNAMES2)$" && $SUDO -g docker "$BIN" "$NAME" pull "$oname"
+      echo "$oname"|grep -Eq "^($DNAMES2)$" && $SUDO -g docker "$BIN" "$NAME" pull "$oname" "$@"
       $SUDO -g docker "$BIN" "$NAME" "$oname" up -d
     else
-      $SUDO -g docker "$BIN" "$NAME" push "$oname" && \
-      $SUDO "$BIN" "$NAME" remote pull "$oname" && \
+      $SUDO -g docker "$BIN" "$NAME" push "$oname" "$@" && \
+      $SUDO "$BIN" "$NAME" remote pull "$oname" "$@" && \
       $SUDO "$BIN" "$NAME" remote "$oname" up -d
     fi
 
     RET=$?
-    log "$dname $oname $@"
+    log "$dname $oname $*"
 
   ;;
 
