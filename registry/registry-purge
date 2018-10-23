@@ -1,0 +1,6 @@
+#!/bin/sh
+
+cd /opt/docker/system || exit 1
+/usr/local/bin/docker-compose stop registry >/dev/null
+/usr/local/bin/docker-compose run --rm registry bin/registry garbage-collect /etc/docker/registry/config.yml
+/usr/local/bin/docker-compose up -d registry >/dev/null 

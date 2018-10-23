@@ -1,0 +1,10 @@
+#!/bin/sh
+
+REGISTRY="https://login:password@docker.misis.ru:4443"
+
+for repo in $(curl -s $REGISTRY/v2/_catalog | jq -r '.repositories[]') ; do
+  for tag in $(curl -s $REGISTRY/v2/$repo/tags/list | jq -r '.tags[]') ; do
+#    docker pull $REGISTRY/$repo:$tag
+    echo $REGISTRY/$repo:$tag
+  done
+done
